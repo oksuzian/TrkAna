@@ -52,25 +52,14 @@ namespace mu2e {
   void InfoMCStructHelper::fillTrkInfoMC(const KalSeed& kseed, const KalSeedMC& kseedmc, TrkInfoMC& trkinfomc) {
     // use the primary match of the track
     // primary associated SimParticle
-    auto trkprimary = kseedmc.simParticle().simParticle(_spcH);
     if(kseedmc.simParticles().size() > 0){
       auto const& simp = kseedmc.simParticles().front();
       trkinfomc.valid = true;
-      trkinfomc.gen = simp._gid.id();
-      trkinfomc.pdg = simp._pdg;
-      trkinfomc.proc = simp._proc;
       trkinfomc.nhits = simp._nhits; // number of hits from the primary particle
       trkinfomc.nactive = simp._nactive; // number of active hits from the primary particle
-      trkinfomc.prel = simp._rel; // relationship of the track primary to the event primary
     }
 
     fillTrkInfoMCDigis(kseed, kseedmc, trkinfomc);
-
-    // fill the origin information of this SimParticle
-    GeomHandle<DetectorSystem> det;
-    trkinfomc.otime = trkprimary->startGlobalTime();
-    trkinfomc.opos = XYZVectorF(det->toDetector(trkprimary->startPosition()));
-    trkinfomc.omom = XYZVectorF(trkprimary->startMomentum().vect());
   }
 
   void InfoMCStructHelper::fillTrkInfoMCDigis(const KalSeed& kseed, const KalSeedMC& kseedmc, TrkInfoMC& trkinfomc) {
@@ -136,38 +125,62 @@ namespace mu2e {
     tshinfomc.doca = -1*dperp;
   }
 
-  void InfoMCStructHelper::fillAllSimInfos(const KalSeedMC& kseedmc, std::vector<SimInfo>& siminfos, int n_generations) {
-    auto trkprimary = kseedmc.simParticle().simParticle(_spcH)->originParticle();
+  void InfoMCStructHelper::fillAllSimInfos(const KalSeedMC& kseedmc, const PrimaryParticle& primary, std::vector<SimInfo>& siminfos, int n_generations) {
+    auto trkprimaryptr = kseedmc.simParticle().simParticle(_spcH);
+    auto trkprimary = trkprimaryptr->originParticle();
+
+    auto current_sim_particle_ptr = trkprimaryptr;
+    auto current_sim_particle = trkprimary;
+    if (n_generations == -1) { // means do all generations
+      n_generations = std::numeric_limits<int>::max();
+    }
 
     for (int i_generation = 0; i_generation < n_generations; ++i_generation) {
-      fillSimInfo(trkprimary, siminfos.at(i_generation));
-      if (trkprimary.parent().isNonnull()) {
-        trkprimary = trkprimary.parent()->originParticle();
+      SimInfo sim_info;
+      fillSimInfo(current_sim_particle, sim_info);
+      sim_info.trkrel = MCRelationship(current_sim_particle_ptr, trkprimaryptr);
+
+      auto bestprimarysp = primary.primarySimParticles().front();
+      MCRelationship bestrel;
+      for(auto const& spp : primary.primarySimParticles()){
+        MCRelationship mcrel(current_sim_particle_ptr, spp);
+        if(mcrel > bestrel){
+          bestrel = mcrel;
+          bestprimarysp = spp;
+        }
+      }
+      sim_info.prirel = bestrel;
+
+      siminfos.push_back(sim_info);
+      if (current_sim_particle.parent().isNonnull()) {
+        current_sim_particle_ptr = current_sim_particle.parent();
+        current_sim_particle = current_sim_particle_ptr->originParticle();
       }
       else {
         break; // this particle doesn't have a parent
       }
     }
-  }
 
-  void InfoMCStructHelper::fillPriInfo(const KalSeedMC& kseedmc, const PrimaryParticle& primary, SimInfo& priinfo) {
-    auto trkprimary = kseedmc.simParticle().simParticle(_spcH);
+    // Now add all the primary particles
+    SimInfo sim_info;
+    for(auto const& spp : primary.primarySimParticles()){
+      fillSimInfo(spp, sim_info);
 
-    // go through the SimParticles of this primary, and find the one most related to the
-    // downstream fit (KalSeedMC)
-
-    if (!primary.primarySimParticles().empty()) {
-      auto bestprimarysp = primary.primarySimParticles().front();
-      MCRelationship bestrel;
-      for(auto const& spp : primary.primarySimParticles()){
-        MCRelationship mcrel(spp,trkprimary);
-        if(mcrel > bestrel){
-          bestrel = mcrel;
-          bestprimarysp = spp;
+      // check whether we already put this primary in
+      bool already_added = false;
+      for (const auto& i_sim_info : siminfos) {
+        if (i_sim_info.prirel == MCRelationship::same) {
+          already_added = true;
+          break;
         }
-      } // redundant: FIXME!
-      fillSimInfo(bestprimarysp, priinfo);
+      }
+      if (!already_added) {
+        sim_info.trkrel = MCRelationship(spp, trkprimaryptr);
+        sim_info.prirel = MCRelationship(spp, spp);
+        siminfos.push_back(sim_info);
+      }
     }
+
   }
 
 
